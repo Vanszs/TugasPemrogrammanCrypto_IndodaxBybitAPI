@@ -145,20 +145,59 @@ export const useTicker = (pair: CoinPair | null, exchange: Exchange): UseApiRetu
 }
 
 // Custom hook for trades data
-export const useTrades = (pair: CoinPair | null, exchange: Exchange): UseApiReturn<TradeData[]> & { newTradesIds: string[] } => {
-  const [data, setData] = useState<TradeData[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<ApiError | null>(null)
-  const [lastUpdate, setLastUpdate] = useState(0)
-  const [newTradesIds, setNewTradesIds] = useState<string[]>([])
-  const previousTradesRef = useRef<{ [key: string]: boolean }>({})
+import { useTradesWebSocket } from './trade-websocket-manager'
 
+// Use WebSocket for trade data with API fallback
+export const useTrades = (pair: CoinPair | null, exchange: Exchange): UseApiReturn<TradeData[]> & { newTradesIds: string[] } => {
+  const [useWebSocket, setUseWebSocket] = useState<boolean>(true)
+  const [fallbackData, setFallbackData] = useState<TradeData[]>([])
+  const [fallbackLoading, setFallbackLoading] = useState<boolean>(false)
+  const [fallbackError, setFallbackError] = useState<ApiError | null>(null)
+  const [fallbackLastUpdate, setFallbackLastUpdate] = useState<number>(0)
+  const [fallbackNewTradesIds, setFallbackNewTradesIds] = useState<string[]>([])
+  const previousTradesRef = useRef<{ [key: string]: boolean }>({})
+  const currentPairRef = useRef<string | null>(null)
+  
+  // Reset previous trades when pair changes
+  const currentExchangeRef = useRef<string | null>(null)
+  
+  useEffect(() => {
+    if (pair?.id !== currentPairRef.current || exchange !== currentExchangeRef.current) {
+      console.log(`[useTrades] Pair/Exchange changed from ${currentPairRef.current}/${currentExchangeRef.current} to ${pair?.id}/${exchange}, resetting state`)
+      previousTradesRef.current = {}
+      setFallbackNewTradesIds([])
+      setFallbackData([])
+      currentPairRef.current = pair?.id || null
+      currentExchangeRef.current = exchange || null
+      
+      // Force reset useWebSocket state to ensure clean start
+      setUseWebSocket(true)
+    }
+  }, [pair, exchange])
+  
+  // Use our improved WebSocket hook with API initialization
+  const wsResult = useTradesWebSocket(
+    pair, 
+    exchange as 'indodax' | 'bybit'
+  )
+  
+  // If WebSocket connection fails or has error, switch to API fallback
+  useEffect(() => {
+    if (wsResult.error || wsResult.connectionStatus === 'error') {
+      console.log('[useTrades] WebSocket error, switching to API fallback')
+      setUseWebSocket(false)
+    } else if (wsResult.connectionStatus === 'connected') {
+      setUseWebSocket(true)
+    }
+  }, [wsResult.error, wsResult.connectionStatus])
+  
+  // Fallback to REST API if WebSocket fails
   const fetchTrades = useCallback(async () => {
     if (!pair) return
 
     try {
-      setLoading(true)
-      setError(null)
+      setFallbackLoading(true)
+      setFallbackError(null)
 
       if (exchange === 'indodax') {
         const response = await indodaxApiService.getTrades(pair.id)
@@ -183,9 +222,9 @@ export const useTrades = (pair: CoinPair | null, exchange: Exchange): UseApiRetu
           previousTradesRef.current = currentTradeIds
           
           // Update state
-          setData(newTrades)
-          setNewTradesIds(newTradeIds)
-          setLastUpdate(Date.now())
+          setFallbackData(newTrades)
+          setFallbackNewTradesIds(newTradeIds)
+          setFallbackLastUpdate(Date.now())
         } else {
           throw new Error(response.error || 'Failed to fetch trades')
         }
@@ -212,9 +251,9 @@ export const useTrades = (pair: CoinPair | null, exchange: Exchange): UseApiRetu
           previousTradesRef.current = currentTradeIds
           
           // Update state
-          setData(transformedTrades)
-          setNewTradesIds(newTradeIds)
-          setLastUpdate(Date.now())
+          setFallbackData(transformedTrades)
+          setFallbackNewTradesIds(newTradeIds)
+          setFallbackLastUpdate(Date.now())
         } else {
           throw new Error(response.error || 'Failed to fetch Bybit trades')
         }
@@ -225,15 +264,16 @@ export const useTrades = (pair: CoinPair | null, exchange: Exchange): UseApiRetu
         timestamp: Date.now(),
         retryCount: 0
       }
-      setError(apiError)
-      setData([])
+      setFallbackError(apiError)
+      setFallbackData([])
     } finally {
-      setLoading(false)
+      setFallbackLoading(false)
     }
   }, [pair, exchange])
 
+  // Set up API fallback in case WebSocket fails
   useEffect(() => {
-    if (pair) {
+    if (!useWebSocket && pair) {
       // Fetch trades initially
       fetchTrades()
       
@@ -244,19 +284,24 @@ export const useTrades = (pair: CoinPair | null, exchange: Exchange): UseApiRetu
       
       // Clean up interval on unmount or when pair changes
       return () => clearInterval(refreshInterval)
-    } else {
-      setData([])
-      setError(null)
     }
-  }, [pair, exchange, fetchTrades])
-
-  return {
-    data,
-    loading,
-    error,
-    lastUpdate,
+  }, [useWebSocket, pair, exchange, fetchTrades])
+  
+  // Return WebSocket data if available, otherwise use API fallback data
+  return useWebSocket ? {
+    data: wsResult.data,
+    loading: wsResult.loading,
+    error: wsResult.error,
+    lastUpdate: wsResult.lastUpdate,
+    refetch: async () => {}, // No need to manually refetch with WebSockets
+    newTradesIds: wsResult.newTradesIds
+  } : {
+    data: fallbackData,
+    loading: fallbackLoading,
+    error: fallbackError,
+    lastUpdate: fallbackLastUpdate,
     refetch: fetchTrades,
-    newTradesIds
+    newTradesIds: fallbackNewTradesIds
   }
 }
 

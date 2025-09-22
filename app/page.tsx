@@ -7,6 +7,10 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Search, TrendingUp, TrendingDown, Activity, Wifi, WifiOff, ToggleLeft, ToggleRight, AlertTriangle, RefreshCw, Zap, BarChart3, DollarSign, Bitcoin, Coins } from "lucide-react"
+import dynamic from 'next/dynamic'
+
+// Dynamically import debug component to prevent it from affecting production
+const DebugWebSocket = dynamic(() => import('@/components/debug-websocket'), { ssr: false })
 import { 
   SmoothPageTransition,
   SmoothCard,
@@ -19,6 +23,7 @@ import {
 import { CoinIcon } from "@/components/ui/coin-icon"
 import { useWebSocketPrice, useWebSocketPrices } from "@/lib/websocket-manager"
 import { useCryptoPairs, useTicker, useTrades, useDepth, useDebouncedValue } from "@/lib/hooks"
+import { useTradesWebSocket } from "@/lib/trade-websocket-manager"
 import { getCryptoIcon } from "@/lib/utils"
 
 type Exchange = "indodax" | "bybit"
@@ -703,12 +708,12 @@ export default function ModernCryptoViewer() {
                         
                         <CardContent>
                           <div className="space-y-3 max-h-96 overflow-y-auto custom-scrollbar">
-                            {tradesLoading ? (
+                            {tradesLoading || (trades && trades.length === 0) ? (
                               <div className="space-y-4">
                                 <SmoothSkeleton lines={10} />
                                 <div className="flex items-center justify-center py-2">
                                   <Badge variant="outline" className="bg-muted/20 animate-pulse">
-                                    Loading trades...
+                                    {tradesLoading ? "Loading trades..." : "Waiting for trades data..."}
                                   </Badge>
                                 </div>
                               </div>
@@ -716,7 +721,7 @@ export default function ModernCryptoViewer() {
                               <>
                                 {trades.map((trade: TradeData, index: number) => (
                                   <SmoothListItem
-                                    key={`${trade.tid || index}-${trade.date}`}
+                                    key={`${selectedPair?.id}-${index}-${trade.tid}-${trade.price}-${trade.amount}`}
                                     delay={0}
                                     className={`flex justify-between items-center p-4 rounded-xl 
                                       ${newTradesIds.includes(trade.tid || `${trade.date}-${trade.price}-${trade.amount}`) 
@@ -746,7 +751,7 @@ export default function ModernCryptoViewer() {
                                           />
                                         </div>
                                         <div className="text-sm text-muted-foreground">
-                                          {parseFloat(trade.amount).toFixed(8)} {selectedPair.traded_currency_unit} @ {currentExchange === "bybit" ? "$" : "Rp "}{parseFloat(trade.price).toLocaleString()}
+                                          {parseFloat(trade.amount).toFixed(8)} {selectedPair?.traded_currency_unit || ""} @ {currentExchange === "bybit" ? "$" : "Rp "}{parseFloat(trade.price).toLocaleString()}
                                         </div>
                                       </div>
                                     </div>
@@ -879,6 +884,9 @@ export default function ModernCryptoViewer() {
           </div>
         </div>
       </div>
+      
+      {/* Debug component - only for development */}
+      {process.env.NODE_ENV === 'development' && <DebugWebSocket />}
     </SmoothPageTransition>
   )
 }
