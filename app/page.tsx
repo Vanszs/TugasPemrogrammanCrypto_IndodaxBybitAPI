@@ -1,15 +1,27 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Search, TrendingUp, TrendingDown, Activity, Wifi, WifiOff, ToggleLeft, ToggleRight, AlertTriangle, RefreshCw } from "lucide-react"
+import { Search, TrendingUp, TrendingDown, Activity, Wifi, WifiOff, ToggleLeft, ToggleRight, AlertTriangle, RefreshCw, Zap, BarChart3, DollarSign, Bitcoin, Coins } from "lucide-react"
+import { 
+  SmoothPageTransition,
+  SmoothCard,
+  SmoothListItem,
+  SmoothPriceCard,
+  AnimatedNumber,
+  LiveConnectionIndicator,
+  SmoothSkeleton
+} from "@/components/ui/smooth-components"
+import { CoinIcon } from "@/components/ui/coin-icon"
+import { useWebSocketPrice, useWebSocketPrices } from "@/lib/websocket-manager"
+import { useCryptoPairs, useTicker, useTrades, useDepth, useDebouncedValue } from "@/lib/hooks"
+import { getCryptoIcon } from "@/lib/utils"
 
 type Exchange = "indodax" | "bybit"
-type ConnectionStatus = "connected" | "disconnected" | "connecting" | "error"
 
 interface CoinPair {
   id: string
@@ -61,780 +73,793 @@ interface DepthData {
   lastUpdate?: number
 }
 
-// Improved API client with better error handling
-class ApiClient {
-  private async fetchWithTimeout(url: string, timeout = 10000): Promise<Response> {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), timeout)
-
-    try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        }
-      })
-      clearTimeout(timeoutId)
-      return response
-    } catch (error) {
-      clearTimeout(timeoutId)
-      throw error
-    }
-  }
-
-  private async fetchWithProxy(url: string): Promise<any> {
-    console.log('[API] Fetching:', url)
-
-    try {
-      const response = await this.fetchWithTimeout(url)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      return await response.json()
-    } catch (error) {
-      console.log('[API] Direct fetch failed, trying proxies...')
+// Enhanced Loading Components
+const ModernLoader = ({ text = "Loading..." }: { text?: string }) => (
+  <div className="flex flex-col items-center justify-center py-16 space-y-8">
+    <div className="relative">
+      {/* Outer ring */}
+      <div className="w-20 h-20 border-3 border-primary/20 rounded-full"></div>
+      {/* Spinning ring */}
+      <div className="absolute inset-0 w-20 h-20 border-3 border-transparent border-t-primary border-r-primary/60 rounded-full animate-spin"></div>
+      {/* Inner pulsing dot */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="w-3 h-3 bg-primary rounded-full animate-pulse"></div>
+      </div>
+    </div>
+    
+    <div className="text-center space-y-3">
+      <h3 className="text-xl font-semibold text-foreground tracking-tight">{text}</h3>
+      <p className="text-sm text-muted-foreground max-w-xs">
+        Fetching real-time market data from exchange APIs
+      </p>
       
-      const proxies = [
-        'https://api.allorigins.win/get?url=',
-        'https://api.codetabs.com/v1/proxy?quest=',
-        'https://thingproxy.freeboard.io/fetch/'
-      ]
-
-      for (const proxy of proxies) {
-        try {
-          const proxyUrl = `${proxy}${encodeURIComponent(url)}`
-          const response = await this.fetchWithTimeout(proxyUrl)
-          
-          if (!response.ok) continue
-          
-          const data = await response.json()
-          
-          if (data.contents) {
-            try {
-              return JSON.parse(data.contents)
-            } catch {
-              return data.contents
-            }
-          }
-          
-          return data.data || data
-        } catch (proxyError) {
-          console.log('[API] Proxy failed:', proxyError)
-          continue
-        }
-      }
-
-      throw new Error('All API endpoints failed')
-    }
-  }
-
-  async get(url: string): Promise<{ data?: any; error?: string; success: boolean }> {
-    try {
-      const data = await this.fetchWithProxy(url)
-      return { data, success: true }
-    } catch (error) {
-      return { 
-        error: error instanceof Error ? error.message : 'Unknown error',
-        success: false 
-      }
-    }
-  }
-}
-
-const apiClient = new ApiClient()
-
-// Connection Status Component
-const ConnectionStatusBadge = ({ status, exchange }: { status: ConnectionStatus; exchange: string }) => {
-  const config = {
-    connected: {
-      variant: "default" as const,
-      icon: Wifi,
-      text: "Live Data",
-      className: "bg-emerald-500 hover:bg-emerald-600 animate-pulse"
-    },
-    connecting: {
-      variant: "secondary" as const,
-      icon: Activity,
-      text: "Connecting...",
-      className: "animate-pulse"
-    },
-    error: {
-      variant: "destructive" as const,
-      icon: AlertTriangle,
-      text: "Error",
-      className: ""
-    },
-    disconnected: {
-      variant: "secondary" as const,
-      icon: WifiOff,
-      text: "Offline",
-      className: ""
-    }
-  }
-
-  const { variant, icon: Icon, text, className } = config[status]
-
-  return (
-    <Badge variant={variant} className={className}>
-      <Icon className={`w-4 h-4 mr-2 ${status === "connecting" ? "animate-spin" : ""}`} />
-      {text} - {exchange}
-    </Badge>
-  )
-}
-
-// Loading components
-const LoadingSkeleton = ({ lines = 3 }: { lines?: number }) => (
-  <div className="space-y-3">
-    {Array.from({ length: lines }).map((_, i) => (
-      <div key={i} className="h-4 bg-muted/40 rounded animate-pulse" style={{ width: `${80 + Math.random() * 20}%` }} />
-    ))}
+      {/* Animated dots */}
+      <div className="flex justify-center space-x-1.5 pt-2">
+        {[0, 1, 2].map((i) => (
+          <div
+            key={i}
+            className="w-1.5 h-1.5 bg-primary/60 rounded-full animate-bounce"
+            style={{ animationDelay: `${i * 0.15}s`, animationDuration: '1s' }}
+          ></div>
+        ))}
+      </div>
+    </div>
   </div>
 )
 
 const CryptoListSkeleton = () => (
-  <div className="space-y-2">
+  <div className="space-y-3">
     {Array.from({ length: 8 }).map((_, i) => (
-      <div key={i} className="p-4 border border-border/30 rounded-xl animate-pulse">
+      <SmoothListItem key={i} delay={i * 50} className="p-4 border border-border/30 rounded-xl">
         <div className="flex items-center gap-4">
-          <div className="w-8 h-8 bg-muted/40 rounded-full" />
-          <div className="flex-1 space-y-2">
-            <div className="h-5 bg-muted/40 rounded w-20" />
-            <div className="h-4 bg-muted/30 rounded w-32" />
+          <div className="w-10 h-10 bg-muted/40 rounded-full skeleton" />
+          <div className="flex-1 space-y-3">
+            <SmoothSkeleton lines={1} className="h-5 w-24" />
+            <SmoothSkeleton lines={1} className="h-4 w-32" />
           </div>
+          <div className="w-8 h-8 bg-muted/30 rounded-full skeleton" />
         </div>
-      </div>
+      </SmoothListItem>
     ))}
   </div>
 )
 
-const TickerSkeleton = () => (
-  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-    {Array.from({ length: 4 }).map((_, i) => (
-      <div key={i} className="space-y-2 p-4 rounded-xl bg-muted/20 animate-pulse">
-        <div className="h-5 bg-muted/30 rounded w-20" />
-        <div className="h-7 bg-muted/40 rounded w-28" />
-      </div>
-    ))}
-  </div>
-)
+// Enhanced Connection Status
+const ModernConnectionStatus = ({ 
+  status, 
+  exchange, 
+  lastUpdate,
+  serverTime 
+}: { 
+  status: 'connected' | 'connecting' | 'disconnected' | 'error'
+  exchange: string
+  lastUpdate?: number
+  serverTime?: string
+}) => {
+  const statusConfig = {
+    connected: {
+      color: "emerald",
+      icon: Wifi,
+      text: "Live Data",
+      animation: "" // Remove pulse animation for connected state
+    },
+    connecting: {
+      color: "yellow", 
+      icon: Activity,
+      text: "Connecting",
+      animation: "animate-spin"
+    },
+    error: {
+      color: "red",
+      icon: AlertTriangle,
+      text: "Error",
+      animation: ""
+    },
+    disconnected: {
+      color: "gray",
+      icon: WifiOff,
+      text: "Offline", 
+      animation: ""
+    }
+  }
 
-// Error component
-const ErrorDisplay = ({ error, onRetry }: { error: string; onRetry: () => void }) => (
-  <div className="text-center py-8">
-    <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-destructive/10 flex items-center justify-center">
-      <AlertTriangle className="w-6 h-6 text-destructive" />
+  const config = statusConfig[status]
+  const Icon = config.icon
+
+  return (
+    <div className="relative">
+      <Badge 
+        variant={status === 'connected' ? 'default' : status === 'error' ? 'destructive' : 'secondary'}
+        className={`
+          px-4 py-2.5 rounded-xl transition-all duration-500 relative shadow-lg backdrop-blur-sm
+          ${status === 'connected' ? 'bg-emerald-500/90 hover:bg-emerald-600/90 shadow-emerald-500/25 border-emerald-400/50' : ''}
+          ${status === 'error' ? 'bg-red-500/90 hover:bg-red-600/90 shadow-red-500/25 border-red-400/50' : ''}
+          ${status === 'connecting' ? 'bg-yellow-500/90 hover:bg-yellow-600/90 shadow-yellow-500/25 border-yellow-400/50' : ''}
+          ${status === 'disconnected' ? 'bg-gray-600/90 hover:bg-gray-700/90 shadow-gray-500/25 border-gray-400/50' : ''}
+          border-2 text-white font-medium
+        `}
+      >
+        <div className="flex items-center gap-2">
+          <Icon className={`w-4 h-4 ${config.animation}`} />
+          <span className="font-semibold text-sm">{config.text}</span>
+          <span className="mx-1 opacity-70">•</span>
+          <span className="text-xs font-medium opacity-90">{exchange.toUpperCase()}</span>
+          {serverTime && status === 'connected' && (
+            <>
+              <span className="mx-1 opacity-70">•</span>
+              <span className="text-xs opacity-80">{serverTime}</span>
+            </>
+          )}
+        </div>
+        
+        {status === 'connected' && (
+          <div className="absolute -top-2 -right-2 w-4 h-4 bg-emerald-300 rounded-full border-2 border-white shadow-lg">
+            <div className="w-2 h-2 bg-emerald-500 rounded-full absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 animate-pulse"></div>
+          </div>
+        )}
+      </Badge>
     </div>
-    <p className="text-destructive font-medium mb-2">Error</p>
-    <p className="text-sm text-muted-foreground mb-4">{error}</p>
-    <Button onClick={onRetry} variant="outline" size="sm">
-      <RefreshCw className="w-4 h-4 mr-2" />
-      Retry
-    </Button>
-  </div>
+  )
+}
+
+// Error Display Component
+const ModernErrorDisplay = ({ error, onRetry }: { error: string; onRetry: () => void }) => (
+  <SmoothCard className="text-center py-12">
+    <CardContent className="space-y-6">
+      <div className="w-20 h-20 mx-auto rounded-full bg-red-500/10 flex items-center justify-center">
+        <AlertTriangle className="w-10 h-10 text-red-400" />
+      </div>
+      <div className="space-y-2">
+        <h3 className="text-xl font-semibold text-red-400">Connection Error</h3>
+        <p className="text-muted-foreground max-w-md mx-auto">{error}</p>
+      </div>
+      <Button onClick={onRetry} variant="outline" className="btn-modern">
+        <RefreshCw className="w-4 h-4 mr-2" />
+        Try Again
+      </Button>
+    </CardContent>
+  </SmoothCard>
 )
 
-export default function CryptoViewer() {
+export default function ModernCryptoViewer() {
   const [currentExchange, setCurrentExchange] = useState<Exchange>("indodax")
-  const [pairs, setPairs] = useState<CoinPair[]>([])
-  const [filteredPairs, setFilteredPairs] = useState<CoinPair[]>([])
   const [selectedPair, setSelectedPair] = useState<CoinPair | null>(null)
-  const [tickerData, setTickerData] = useState<TickerData | null>(null)
-  const [trades, setTrades] = useState<TradeData[]>([])
-  const [depth, setDepth] = useState<DepthData | null>(null)
   const [searchTerm, setSearchTerm] = useState("")
-  const [loading, setLoading] = useState(true)
-  const [tickerLoading, setTickerLoading] = useState(false)
-  const [tradesLoading, setTradesLoading] = useState(false)
-  const [depthLoading, setDepthLoading] = useState(false)
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("disconnected")
-  const [error, setError] = useState<string | null>(null)
+  const [cachedPrice, setCachedPrice] = useState<any>(null)
+  
+  // Use debounced search for better performance
+  const debouncedSearch = useDebouncedValue(searchTerm, 300)
+  
+  // Use custom hooks for data fetching
+  const { pairs, loading: pairsLoading, error: pairsError, refetch: refetchPairs } = useCryptoPairs(currentExchange)
+  const { data: tickerData, loading: tickerLoading } = useTicker(selectedPair, currentExchange)
+  const { data: trades, loading: tradesLoading } = useTrades(selectedPair, currentExchange)
+  const { data: depth, loading: depthLoading } = useDepth(selectedPair, currentExchange)
+  
+  // WebSocket integration for real-time updates with fallback
+  const { price: livePrice, connectionStatus } = useWebSocketPrice(
+    selectedPair?.id || null, 
+    currentExchange
+  )
 
-  // Fetch pairs for current exchange
-  const fetchPairs = useCallback(async () => {
-    try {
-      setLoading(true)
-      setError(null)
-      setConnectionStatus("connecting")
-
-      console.log(`[API] Fetching ${currentExchange} pairs...`)
-
-      let response
-      if (currentExchange === "indodax") {
-        response = await apiClient.get("https://indodax.com/api/pairs")
-        if (response.success && Array.isArray(response.data)) {
-          const limitedPairs = response.data.slice(0, 400)
-          setPairs(limitedPairs)
-          setFilteredPairs(limitedPairs)
-        } else {
-          throw new Error(response.error || "Failed to fetch Indodax pairs")
-        }
-      } else {
-        response = await apiClient.get("https://api.bybit.com/v5/market/instruments-info?category=linear&limit=400")
-        if (response.success && response.data?.result?.list) {
-          const instruments = response.data.result.list
-          const convertedPairs: CoinPair[] = instruments.map((instrument: any) => ({
-            id: instrument.symbol.toLowerCase(),
-            symbol: instrument.symbol,
-            base_currency: instrument.baseCoin,
-            traded_currency: instrument.quoteCoin,
-            traded_currency_unit: instrument.baseCoin,
-            description: `${instrument.baseCoin}/${instrument.quoteCoin}`,
-            ticker_id: instrument.symbol.toLowerCase(),
-            url_logo: `/placeholder.svg?height=32&width=32&query=${instrument.baseCoin}`,
-            url_logo_png: `/placeholder.svg?height=32&width=32&query=${instrument.baseCoin}`,
-            isActive: instrument.status === 'Trading',
-            lastUpdate: Date.now()
-          }))
-          setPairs(convertedPairs)
-          setFilteredPairs(convertedPairs)
-        } else {
-          throw new Error(response.error || "Failed to fetch Bybit instruments")
-        }
+  // Use WebSocket data if available, otherwise fallback to regular API data
+  const displayPrice = useMemo(() => {
+    // Priority: WebSocket data > API ticker data
+    if (livePrice && connectionStatus === 'connected' && selectedPair) {
+      return {
+        ...livePrice,
+        symbol: selectedPair.id
       }
-
-      setConnectionStatus("connected")
-      console.log(`[API] Successfully loaded ${pairs.length} pairs`)
-    } catch (err) {
-      console.error("[API] Error fetching pairs:", err)
-      setError(err instanceof Error ? err.message : "Failed to load data")
-      setConnectionStatus("error")
-      setPairs([])
-      setFilteredPairs([])
-    } finally {
-      setLoading(false)
     }
-  }, [currentExchange])
-
-  // Fetch ticker data
-  const fetchTicker = useCallback(async (pair: CoinPair) => {
-    try {
-      setTickerLoading(true)
-      console.log(`[API] Fetching ticker for ${pair.id} on ${currentExchange}`)
-
-      let response
-      if (currentExchange === "indodax") {
-        response = await apiClient.get(`https://indodax.com/api/ticker/${pair.id}`)
-        if (response.success && response.data) {
-          const ticker = response.data.ticker || response.data
-          setTickerData({ ...ticker, lastFetch: Date.now() })
-        }
-      } else {
-        response = await apiClient.get(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${pair.symbol.toUpperCase()}`)
-        if (response.success && response.data?.result?.list?.[0]) {
-          const ticker = response.data.result.list[0]
-          setTickerData({
-            last: ticker.lastPrice,
-            high: ticker.highPrice24h,
-            low: ticker.lowPrice24h,
-            vol_idr: ticker.turnover24h,
-            buy: ticker.bid1Price,
-            sell: ticker.ask1Price,
-            server_time: Date.now() / 1000,
-            lastFetch: Date.now()
-          })
-        }
+    
+    // Fallback to ticker data if WebSocket is not available
+    if (tickerData && selectedPair) {
+      return {
+        symbol: selectedPair.id,
+        price: tickerData.last,
+        change24h: '0',
+        changePercent24h: '0',
+        timestamp: Date.now(),
+        volume24h: tickerData.vol_idr,
+        high24h: tickerData.high,
+        low24h: tickerData.low
       }
-
-      if (!response?.success) {
-        throw new Error(response?.error || "Failed to fetch ticker")
-      }
-    } catch (err) {
-      console.error("[API] Error fetching ticker:", err)
-      setTickerData(null)
-    } finally {
-      setTickerLoading(false)
     }
-  }, [currentExchange])
+    
+    return null
+  }, [livePrice, connectionStatus, tickerData, selectedPair])
 
-  // Fetch trades data
-  const fetchTrades = useCallback(async (pair: CoinPair) => {
-    try {
-      setTradesLoading(true)
-      console.log(`[API] Fetching trades for ${pair.id} on ${currentExchange}`)
-
-      let response
-      if (currentExchange === "indodax") {
-        response = await apiClient.get(`https://indodax.com/api/trades/${pair.id}`)
-        if (response.success && Array.isArray(response.data)) {
-          setTrades(response.data.slice(0, 20))
-        }
-      } else {
-        response = await apiClient.get(`https://api.bybit.com/v5/market/recent-trade?category=linear&symbol=${pair.symbol.toUpperCase()}&limit=20`)
-        if (response.success && response.data?.result?.list) {
-          const convertedTrades = response.data.result.list.map((trade: any) => ({
-            date: (trade.time / 1000).toString(),
-            price: trade.price,
-            amount: trade.size,
-            tid: trade.execId,
-            type: trade.side.toLowerCase() as "buy" | "sell",
-            timestamp: trade.time
-          }))
-          setTrades(convertedTrades)
-        }
+  // Cache and stabilize price data to prevent jumping
+  useEffect(() => {
+    if (displayPrice && selectedPair) {
+      const priceKey = `${currentExchange}_${selectedPair.id}`
+      // Only update cache if price has changed significantly or is much newer
+      if (!cachedPrice || 
+          cachedPrice.symbol !== displayPrice.symbol ||
+          Math.abs(parseFloat(displayPrice.price) - parseFloat(cachedPrice.price)) > parseFloat(displayPrice.price) * 0.001 ||
+          displayPrice.timestamp - cachedPrice.timestamp > 10000) {
+        setCachedPrice(displayPrice)
       }
-
-      if (!response?.success) {
-        throw new Error(response?.error || "Failed to fetch trades")
-      }
-    } catch (err) {
-      console.error("[API] Error fetching trades:", err)
-      setTrades([])
-    } finally {
-      setTradesLoading(false)
     }
-  }, [currentExchange])
+  }, [displayPrice, selectedPair, currentExchange, cachedPrice])
 
-  // Fetch depth data
-  const fetchDepth = useCallback(async (pair: CoinPair) => {
-    try {
-      setDepthLoading(true)
-      console.log(`[API] Fetching depth for ${pair.id} on ${currentExchange}`)
+  // Use cached price for stability, fallback to displayPrice
+  const stablePrice = cachedPrice && displayPrice && cachedPrice.symbol === displayPrice.symbol ? cachedPrice : displayPrice
 
-      let response
-      if (currentExchange === "indodax") {
-        response = await apiClient.get(`https://indodax.com/api/depth/${pair.id}`)
-        if (response.success && response.data) {
-          setDepth({ ...response.data, lastUpdate: Date.now() })
-        }
-      } else {
-        response = await apiClient.get(`https://api.bybit.com/v5/market/orderbook?category=linear&symbol=${pair.symbol.toUpperCase()}&limit=50`)
-        if (response.success && response.data?.result) {
-          setDepth({
-            buy: response.data.result.b || [],
-            sell: response.data.result.a || [],
-            lastUpdate: Date.now()
-          })
-        }
-      }
+  // Enhanced connection status that accounts for fallback
+  const effectiveConnectionStatus = useMemo(() => {
+    // If we have any data (WebSocket or API), consider it connected
+    if (connectionStatus === 'connected') return 'connected'
+    if (tickerData || pairs.length > 0) return 'connected' // Connected if we have any data
+    if (pairsLoading || tickerLoading) return 'connecting'
+    return connectionStatus
+  }, [connectionStatus, tickerData, livePrice, pairs.length, pairsLoading, tickerLoading])
 
-      if (!response?.success) {
-        throw new Error(response?.error || "Failed to fetch depth")
-      }
-    } catch (err) {
-      console.error("[API] Error fetching depth:", err)
-      setDepth(null)
-    } finally {
-      setDepthLoading(false)
+  // Check if we're using fallback data
+  const isUsingFallback = useMemo(() => {
+    return tickerData && !livePrice && connectionStatus !== 'connected'
+  }, [tickerData, livePrice, connectionStatus])
+
+  // Get server time for each exchange
+  const getServerTime = () => {
+    const now = new Date()
+    if (currentExchange === 'bybit') {
+      // Bybit uses UTC
+      return now.toISOString().slice(11, 19) + ' UTC'
+    } else {
+      // Indodax uses WIB (UTC+7)
+      const wibTime = new Date(now.getTime() + (7 * 60 * 60 * 1000))
+      return wibTime.toISOString().slice(11, 19) + ' WIB'
     }
-  }, [currentExchange])
+  }
+
+  // Filter pairs with memoization for performance
+  const filteredPairs = useMemo(() => {
+    if (!debouncedSearch.trim()) return pairs
+    
+    const search = debouncedSearch.toLowerCase()
+    return pairs.filter(pair =>
+      pair.symbol.toLowerCase().includes(search) ||
+      pair.description.toLowerCase().includes(search) ||
+      pair.traded_currency_unit.toLowerCase().includes(search)
+    )
+  }, [pairs, debouncedSearch])
 
   // Handle exchange toggle
   const handleExchangeToggle = useCallback(() => {
     const newExchange = currentExchange === "indodax" ? "bybit" : "indodax"
     setCurrentExchange(newExchange)
     setSelectedPair(null)
-    setTickerData(null)
-    setTrades([])
-    setDepth(null)
     setSearchTerm("")
-    setError(null)
-    console.log(`[UI] Switched to ${newExchange}`)
   }, [currentExchange])
 
   // Handle pair selection
   const handlePairSelect = useCallback((pair: CoinPair) => {
     setSelectedPair(pair)
-    setTickerData(null)
-    setTrades([])
-    setDepth(null)
+  }, [])
 
-    // Fetch data for selected pair
-    fetchTicker(pair)
-    fetchTrades(pair)
-    fetchDepth(pair)
-  }, [fetchTicker, fetchTrades, fetchDepth])
-
-  // Filter pairs based on search
-  useEffect(() => {
-    if (searchTerm.trim()) {
-      const sanitized = searchTerm.trim().toLowerCase()
-      const filtered = pairs.filter(pair =>
-        pair.symbol.toLowerCase().includes(sanitized) ||
-        pair.description.toLowerCase().includes(sanitized) ||
-        pair.traded_currency_unit.toLowerCase().includes(sanitized)
-      )
-      setFilteredPairs(filtered)
-    } else {
-      setFilteredPairs(pairs)
-    }
-  }, [searchTerm, pairs])
-
-  // Auto-refresh data
-  useEffect(() => {
-    if (selectedPair && connectionStatus === "connected") {
-      const interval = setInterval(() => {
-        console.log("[UI] Auto-refreshing data...")
-        fetchTicker(selectedPair)
-        fetchTrades(selectedPair)
-        fetchDepth(selectedPair)
-      }, 10000)
-
-      return () => clearInterval(interval)
-    }
-  }, [selectedPair, connectionStatus, fetchTicker, fetchTrades, fetchDepth])
-
-  // Load pairs on exchange change
-  useEffect(() => {
-    fetchPairs()
-  }, [fetchPairs])
-
-  // Format currency
-  const formatCurrency = useCallback((value: string, currency = "IDR") => {
-    const num = parseFloat(value)
+  // Format currency with proper locale and thousand separators
+  const formatCurrency = useCallback((value: string | number, currency = "IDR") => {
+    const num = typeof value === 'string' ? parseFloat(value) || 0 : value
     if (isNaN(num)) return "..."
 
+    // Helper function to add thousand separators with dots (Indonesian format)
+    const addThousandSeparators = (numStr: string) => {
+      const parts = numStr.split('.')
+      const integerPart = parts[0]
+      const decimalPart = parts[1]
+      
+      // Add dots as thousand separators
+      const formattedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.')
+      
+      return decimalPart ? `${formattedInteger},${decimalPart}` : formattedInteger
+    }
+
     if (currentExchange === "indodax" && currency === "IDR") {
-      return new Intl.NumberFormat("id-ID", {
-        style: "currency",
-        currency: "IDR",
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 0,
-      }).format(num)
+      // For IDR, typically no decimals for large amounts
+      const formatted = num < 1000 ? num.toFixed(2) : Math.round(num).toString()
+      return addThousandSeparators(formatted)
     }
 
     if (currentExchange === "bybit") {
-      return new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 8,
-      }).format(num)
+      // For USD, use appropriate decimal places
+      const formatted = num.toFixed(num < 1 ? 8 : num < 100 ? 6 : 2)
+      return addThousandSeparators(formatted)
     }
 
-    return num.toLocaleString("id-ID", {
-      minimumFractionDigits: 8,
-      maximumFractionDigits: 8,
-    })
+    // Default formatting
+    const formatted = num.toFixed(num < 1 ? 8 : num < 100 ? 6 : 2)
+    return addThousandSeparators(formatted)
   }, [currentExchange])
 
-  if (loading && pairs.length === 0) {
+  // Get trend based on price change
+  const getTrend = (current: string, previous: string): 'up' | 'down' | 'neutral' => {
+    const currentNum = parseFloat(current)
+    const previousNum = parseFloat(previous) 
+    if (currentNum > previousNum) return 'up'
+    if (currentNum < previousNum) return 'down'
+    return 'neutral'
+  }
+
+  // Initial loading state
+  if (pairsLoading && pairs.length === 0) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background via-background to-slate-900 flex items-center justify-center p-4">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6 text-center space-y-6">
-            <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
-              <Activity className="w-8 h-8 text-primary animate-spin" />
-            </div>
-            <div className="space-y-2">
-              <h2 className="text-xl font-semibold">Loading Crypto Data</h2>
-              <p className="text-muted-foreground">Fetching latest market information...</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <SmoothPageTransition>
+        <div className="min-h-screen bg-gradient-to-br from-background via-background to-slate-900/50 flex items-center justify-center p-4">
+          <SmoothCard className="w-full max-w-md glass-card">
+            <CardContent className="pt-6">
+              <ModernLoader text="Loading Crypto Markets..." />
+            </CardContent>
+          </SmoothCard>
+        </div>
+      </SmoothPageTransition>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-slate-900 p-4">
-      <div className="max-w-7xl mx-auto space-y-8">
-        {/* Header */}
-        <Card className="glass border-0 shadow-2xl">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h1 className="text-4xl font-bold gradient-text mb-2">
-                  {currentExchange === "indodax" ? "Indodax" : "Bybit"} Crypto Viewer
-                </h1>
-                <p className="text-muted-foreground text-lg">Real-time cryptocurrency data with modern interface</p>
-              </div>
-              <div className="flex items-center gap-4">
-                <Button
-                  onClick={handleExchangeToggle}
-                  variant="outline"
-                  size="lg"
-                  className="flex items-center gap-3 px-6 py-3 rounded-xl hover:scale-105 hover:shadow-lg"
-                >
-                  {currentExchange === "indodax" ? (
-                    <>
-                      <ToggleLeft className="w-5 h-5 text-primary" />
-                      <span className="font-semibold">Indodax</span>
-                      <span className="text-muted-foreground">→ Bybit</span>
-                    </>
-                  ) : (
-                    <>
-                      <ToggleRight className="w-5 h-5 text-primary" />
-                      <span className="font-semibold">Bybit</span>
-                      <span className="text-muted-foreground">→ Indodax</span>
-                    </>
-                  )}
-                </Button>
-
-                <ConnectionStatusBadge status={connectionStatus} exchange={currentExchange} />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Pair List */}
-          <div className="lg:col-span-1">
-            <Card className="glass border-0 shadow-2xl">
-              <CardHeader className="pb-4">
-                <CardTitle className="text-xl font-semibold flex items-center gap-2">
-                  <div className="w-2 h-2 bg-primary rounded-full animate-pulse"></div>
-                  Cryptocurrency Pairs ({pairs.length}/400)
-                </CardTitle>
-                <div className="relative">
-                  <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-muted-foreground w-5 h-5" />
-                  <Input
-                    placeholder="Search coins..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-12 h-12 bg-input/50 border-border/50 rounded-xl"
-                  />
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2 max-h-[500px] overflow-y-auto">
-                  {error ? (
-                    <ErrorDisplay error={error} onRetry={fetchPairs} />
-                  ) : loading ? (
-                    <CryptoListSkeleton />
-                  ) : filteredPairs.length === 0 ? (
-                    <div className="text-center py-12 text-muted-foreground">
-                      <Activity className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                      No coins found
+    <SmoothPageTransition>
+      <div className="min-h-screen bg-gradient-to-br from-background via-background to-slate-900/50 container-padding section-spacing">
+        <div className="max-w-7xl mx-auto space-y-8">
+          
+          {/* Modern Minimalist Header */}
+          <div className="relative">
+            {/* Background Pattern */}
+            <div className="absolute inset-0 bg-gradient-to-r from-primary/5 via-transparent to-primary/5 rounded-2xl"></div>
+            
+            <SmoothCard className="glass-card border-0 shadow-xl overflow-hidden relative" delay={100}>
+              <CardContent className="p-8 lg:p-10">
+                <div className="flex flex-col lg:flex-row items-center justify-between gap-8">
+                  
+                  {/* Left Section - Branding */}
+                  <div className="flex items-center gap-6 flex-1">
+                    <div className="relative">
+                      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-primary/70 flex items-center justify-center shadow-lg">
+                        <BarChart3 className="w-8 h-8 text-white" />
+                      </div>
+                      <div className="absolute -inset-1 bg-gradient-to-r from-primary/20 to-primary/10 rounded-2xl blur opacity-75"></div>
                     </div>
-                  ) : (
-                    filteredPairs.map((pair, index) => (
-                      <Button
-                        key={pair.id}
-                        variant={selectedPair?.id === pair.id ? "default" : "ghost"}
-                        className={`w-full justify-start p-4 h-auto rounded-xl transition-all duration-200 hover:scale-[1.02] hover:shadow-lg ${
-                          selectedPair?.id === pair.id
-                            ? "bg-primary text-primary-foreground shadow-lg shadow-primary/25"
-                            : "hover:bg-accent/50"
-                        }`}
-                        onClick={() => handlePairSelect(pair)}
-                      >
-                        <div className="flex items-center gap-4 w-full">
-                          <div className="relative">
-                            <img
-                              src={pair.url_logo_png || "/placeholder.svg?height=32&width=32"}
-                              alt={pair.traded_currency_unit}
-                              className="w-8 h-8 rounded-full ring-2 ring-border/20"
-                              onError={(e) => {
-                                e.currentTarget.src = "/crypto-digital-landscape.png"
-                              }}
-                            />
-                            {selectedPair?.id === pair.id && (
-                              <div className="absolute -top-1 -right-1 w-3 h-3 bg-emerald-400 rounded-full animate-pulse"></div>
-                            )}
-                          </div>
-                          <div className="text-left flex-1">
-                            <div className="font-semibold text-base">{pair.traded_currency_unit}</div>
-                            <div className="text-sm text-muted-foreground truncate">{pair.description}</div>
-                          </div>
-                        </div>
-                      </Button>
-                    ))
-                  )}
+                    
+                    <div className="space-y-2">
+                      <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-primary via-primary/80 to-primary bg-clip-text text-transparent">
+                        {currentExchange === "indodax" ? "Indodax" : "Bybit"}
+                      </h1>
+                      <p className="text-muted-foreground text-lg font-medium">
+                        Professional Trading Platform
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Right Section - Status & Controls */}
+                  <div className="flex flex-col lg:flex-row items-center gap-6">
+                    
+                    {/* Connection Status */}
+                    <div className="flex items-center gap-4">
+                      <ModernConnectionStatus 
+                        status={effectiveConnectionStatus} 
+                        exchange={currentExchange}
+                        lastUpdate={Date.now()}
+                        serverTime={getServerTime()}
+                      />
+                      {pairs.length > 0 && (
+                        <Badge variant="outline" className="px-4 py-2 bg-white/5 border-white/20 text-sm">
+                          <Zap className="w-4 h-4 mr-2" />
+                          {pairs.length} Markets
+                        </Badge>
+                      )}
+                    </div>
+
+                    {/* Exchange Toggle */}
+                    <Button
+                      onClick={handleExchangeToggle}
+                      size="lg"
+                      className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-white border-0 px-8 py-3 rounded-xl text-base font-semibold transition-all duration-300 hover:scale-105 hover:shadow-lg"
+                      disabled={pairsLoading}
+                    >
+                      {currentExchange === "indodax" ? (
+                        <>
+                          <ToggleLeft className="w-5 h-5 mr-2" />
+                          Switch to Bybit
+                        </>
+                      ) : (
+                        <>
+                          <ToggleRight className="w-5 h-5 mr-2" />
+                          Switch to Indodax
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                  
                 </div>
+                
+                {/* Status Indicators */}
+                {isUsingFallback && (
+                  <div className="mt-6 pt-6 border-t border-white/10">
+                    <Badge variant="secondary" className="px-4 py-2 bg-yellow-500/20 text-yellow-400 border-yellow-500/30">
+                      <Activity className="w-4 h-4 mr-2" />
+                      Using API Mode - WebSocket Fallback Active
+                    </Badge>
+                  </div>
+                )}
               </CardContent>
-            </Card>
+            </SmoothCard>
           </div>
 
-          {/* Main Content */}
-          <div className="lg:col-span-2">
-            {selectedPair ? (
-              <div className="space-y-8">
-                {/* Ticker Data */}
-                <Card className="glass border-0 shadow-2xl">
-                  <CardHeader className="pb-4">
-                    <CardTitle className="flex items-center gap-4 text-2xl">
-                      <div className="relative">
-                        <img
-                          src={selectedPair.url_logo_png || "/placeholder.svg?height=40&width=40"}
-                          alt={selectedPair.traded_currency_unit}
-                          className="w-10 h-10 rounded-full ring-2 ring-primary/20"
-                          onError={(e) => {
-                            e.currentTarget.src = "/crypto-digital-landscape.png"
-                          }}
-                        />
-                        <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-400 rounded-full border-2 border-background"></div>
-                      </div>
-                      <div>
-                        <div className="gradient-text">{selectedPair.description}</div>
-                        <div className="text-sm text-muted-foreground font-normal">{selectedPair.symbol}</div>
-                      </div>
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {tickerLoading ? (
-                      <TickerSkeleton />
-                    ) : tickerData ? (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                        <div className="space-y-2 p-4 rounded-xl bg-gradient-to-br from-primary/10 to-primary/5 border border-primary/20">
-                          <p className="text-sm text-muted-foreground font-medium">Last Price</p>
-                          <p className="text-2xl font-bold text-primary break-words">
-                            {formatCurrency(tickerData.last)}
-                          </p>
+          <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
+            
+            {/* Enhanced Sidebar */}
+            <div className="xl:col-span-1">
+              <SmoothCard className="glass-card border-0 shadow-xl" delay={200}>
+                <CardHeader className="pb-4">
+                  <CardTitle className="text-xl font-semibold flex items-center gap-3">
+                    <div className="w-2 h-2 bg-primary rounded-full animate-pulse"></div>
+                    Crypto Markets
+                    <Badge variant="secondary" className="ml-auto">
+                      {filteredPairs.length}
+                    </Badge>
+                  </CardTitle>
+                  
+                  <div className="relative">
+                    <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-muted-foreground w-5 h-5" />
+                    <Input
+                      placeholder="Search markets..."
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className="pl-12 h-12 bg-input/50 border-border/50 rounded-xl focus-ring"
+                    />
+                  </div>
+                </CardHeader>
+                
+                <CardContent>
+                  <div className="space-y-3 max-h-[600px] overflow-y-auto custom-scrollbar">
+                    {pairsError ? (
+                      <ModernErrorDisplay error={pairsError.message || 'An error occurred'} onRetry={refetchPairs} />
+                    ) : pairsLoading ? (
+                      <CryptoListSkeleton />
+                    ) : filteredPairs.length === 0 ? (
+                      <div className="text-center py-12">
+                        <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-muted/20 flex items-center justify-center">
+                          <Search className="w-8 h-8 text-muted-foreground/50" />
                         </div>
-                        <div className="space-y-2 p-4 rounded-xl bg-gradient-to-br from-emerald-500/10 to-emerald-500/5 border border-emerald-500/20">
-                          <p className="text-sm text-muted-foreground font-medium">24h High</p>
-                          <p className="text-xl font-bold text-emerald-400 break-words">
-                            {formatCurrency(tickerData.high)}
-                          </p>
-                        </div>
-                        <div className="space-y-2 p-4 rounded-xl bg-gradient-to-br from-red-500/10 to-red-500/5 border border-red-500/20">
-                          <p className="text-sm text-muted-foreground font-medium">24h Low</p>
-                          <p className="text-xl font-bold text-red-400 break-words">
-                            {formatCurrency(tickerData.low)}
-                          </p>
-                        </div>
-                        <div className="space-y-2 p-4 rounded-xl bg-gradient-to-br from-blue-500/10 to-blue-500/5 border border-blue-500/20">
-                          <p className="text-sm text-muted-foreground font-medium">Volume</p>
-                          <p className="text-xl font-bold text-blue-400 break-words">
-                            {tickerData.vol_idr ? formatCurrency(tickerData.vol_idr) : "..."}
-                          </p>
-                        </div>
+                        <p className="text-muted-foreground">No markets found</p>
                       </div>
                     ) : (
-                      <div className="text-center py-8 text-muted-foreground">
-                        <Activity className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                        No ticker data available
-                      </div>
+                      filteredPairs.map((pair, index) => (
+                        <SmoothListItem
+                          key={pair.id}
+                          delay={index * 30}
+                          isSelected={selectedPair?.id === pair.id}
+                          onClick={() => handlePairSelect(pair)}
+                          className="p-4 border border-border/30 rounded-xl cursor-pointer"
+                        >
+                          <div className="flex items-center gap-4">
+                            <div className="relative">
+                              <CoinIcon
+                                symbol={pair.traded_currency_unit || pair.id}
+                                exchange={currentExchange}
+                                existingLogo={pair.url_logo_png}
+                                className="w-10 h-10 rounded-full ring-2 ring-border/20"
+                              />
+                              
+                              {selectedPair?.id === pair.id && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-400 rounded-full border-2 border-background animate-pulse"></div>
+                              )}
+                            </div>
+                            
+                            <div className="flex-1 min-w-0">
+                              <div className="font-semibold text-base truncate">
+                                {pair.traded_currency_unit}
+                              </div>
+                              <div className="text-sm text-muted-foreground truncate">
+                                {pair.description}
+                              </div>
+                            </div>
+
+                            {selectedPair?.id === pair.id && (
+                              <div className="w-2 h-2 bg-primary rounded-full animate-pulse"></div>
+                            )}
+                          </div>
+                        </SmoothListItem>
+                      ))
                     )}
-                  </CardContent>
-                </Card>
-
-                {/* Trades and Order Book */}
-                <Tabs defaultValue="trades" className="w-full">
-                  <TabsList className="grid w-full grid-cols-2 bg-muted/30 p-1 rounded-xl">
-                    <TabsTrigger value="trades" className="rounded-lg">
-                      Recent Trades
-                    </TabsTrigger>
-                    <TabsTrigger value="orderbook" className="rounded-lg">
-                      Order Book
-                    </TabsTrigger>
-                  </TabsList>
-
-                  <TabsContent value="trades" className="mt-6">
-                    <Card className="glass border-0 shadow-xl">
-                      <CardHeader>
-                        <CardTitle className="flex items-center gap-2">
-                          <Activity className="w-5 h-5 text-primary" />
-                          Recent Trades
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="space-y-2 max-h-80 overflow-y-auto">
-                          {tradesLoading ? (
-                            <LoadingSkeleton lines={10} />
-                          ) : trades.length > 0 ? (
-                            trades.map((trade, index) => (
-                              <div
-                                key={trade.tid || index}
-                                className="flex justify-between items-center p-4 rounded-xl bg-muted/20 hover:bg-muted/30 transition-colors border border-border/30"
-                              >
-                                <div className="flex items-center gap-3">
-                                  {trade.type === "buy" ? (
-                                    <div className="p-2 rounded-full bg-emerald-500/20">
-                                      <TrendingUp className="w-4 h-4 text-emerald-400" />
-                                    </div>
-                                  ) : (
-                                    <div className="p-2 rounded-full bg-red-500/20">
-                                      <TrendingDown className="w-4 h-4 text-red-400" />
-                                    </div>
-                                  )}
-                                  <span className="font-semibold">{formatCurrency(trade.price)}</span>
-                                </div>
-                                <div className="text-right">
-                                  <div className="font-medium">{parseFloat(trade.amount).toFixed(8)}</div>
-                                  <div className="text-xs text-muted-foreground">
-                                    {new Date(parseInt(trade.date) * 1000).toLocaleTimeString()}
-                                  </div>
-                                </div>
-                              </div>
-                            ))
-                          ) : (
-                            <div className="text-center py-12 text-muted-foreground">
-                              <Activity className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                              No trades available
-                            </div>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </TabsContent>
-
-                  <TabsContent value="orderbook" className="mt-6">
-                    <Card className="glass border-0 shadow-xl">
-                      <CardHeader>
-                        <CardTitle className="flex items-center gap-2">
-                          <Activity className="w-5 h-5 text-primary" />
-                          Order Book
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        {depthLoading ? (
-                          <LoadingSkeleton lines={15} />
-                        ) : depth ? (
-                          <div className="grid grid-cols-2 gap-6">
-                            <div className="space-y-3">
-                              <h4 className="font-semibold text-emerald-400 flex items-center gap-2">
-                                <TrendingUp className="w-4 h-4" />
-                                Buy Orders
-                              </h4>
-                              <div className="space-y-2 max-h-64 overflow-y-auto">
-                                {depth.buy.slice(0, 15).map(([price, amount], index) => (
-                                  <div
-                                    key={index}
-                                    className="flex justify-between text-sm p-2 rounded-lg bg-emerald-500/5 hover:bg-emerald-500/10 transition-colors"
-                                  >
-                                    <span className="text-emerald-400 font-medium">{formatCurrency(price)}</span>
-                                    <span className="text-muted-foreground">{parseFloat(amount).toFixed(8)}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                            <div className="space-y-3">
-                              <h4 className="font-semibold text-red-400 flex items-center gap-2">
-                                <TrendingDown className="w-4 h-4" />
-                                Sell Orders
-                              </h4>
-                              <div className="space-y-2 max-h-64 overflow-y-auto">
-                                {depth.sell.slice(0, 15).map(([price, amount], index) => (
-                                  <div
-                                    key={index}
-                                    className="flex justify-between text-sm p-2 rounded-lg bg-red-500/5 hover:bg-red-500/10 transition-colors"
-                                  >
-                                    <span className="text-red-400 font-medium">{formatCurrency(price)}</span>
-                                    <span className="text-muted-foreground">{parseFloat(amount).toFixed(8)}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="text-center py-12 text-muted-foreground">
-                            <Activity className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                            No order book data available
-                          </div>
-                        )}
-                      </CardContent>
-                    </Card>
-                  </TabsContent>
-                </Tabs>
-              </div>
-            ) : (
-              <Card className="glass border-0 shadow-2xl">
-                <CardContent className="flex items-center justify-center h-96">
-                  <div className="text-center">
-                    <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center">
-                      <Activity className="w-12 h-12 text-primary animate-pulse" />
-                    </div>
-                    <h3 className="text-2xl font-bold mb-3 gradient-text">Select a Cryptocurrency</h3>
-                    <p className="text-muted-foreground text-lg">
-                      Choose a coin from the list to view its real-time trading data
-                    </p>
                   </div>
                 </CardContent>
-              </Card>
-            )}
+              </SmoothCard>
+            </div>
+
+            {/* Enhanced Main Content */}
+            <div className="xl:col-span-3">
+              {selectedPair ? (
+                <div className="space-y-8">
+                  
+                  {/* Enhanced Ticker Section */}
+                  <SmoothCard className="glass-card border-0 shadow-xl" delay={300}>
+                    <CardHeader className="pb-6">
+                      <CardTitle className="flex items-center gap-4 text-2xl">
+                        <div className="relative">
+                          <CoinIcon
+                            symbol={selectedPair.traded_currency_unit || selectedPair.id}
+                            exchange={currentExchange}
+                            existingLogo={selectedPair.url_logo_png}
+                            className="w-12 h-12 rounded-full ring-2 ring-primary/20"
+                          />
+                        </div>
+                        <div className="space-y-1 flex-1">
+                          <div className="flex items-center gap-3">
+                            <div className="gradient-text font-bold">
+                              {selectedPair.description}
+                            </div>
+                            <LiveConnectionIndicator 
+                              status={effectiveConnectionStatus}
+                              lastUpdate={stablePrice?.timestamp}
+                            />
+                          </div>
+                          <div className="text-sm text-muted-foreground font-normal">
+                            {selectedPair.symbol} • {currentExchange.toUpperCase()}
+                          </div>
+                        </div>
+                      </CardTitle>
+                    </CardHeader>
+                    
+                    <CardContent>
+                      {tickerLoading ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6">
+                          {Array.from({ length: 4 }).map((_, i) => (
+                            <div key={i} className="space-y-3 p-4 lg:p-6 rounded-xl bg-muted/20">
+                              <SmoothSkeleton lines={1} className="h-3 sm:h-4 w-16 sm:w-20" />
+                              <SmoothSkeleton lines={1} className="h-6 sm:h-7 lg:h-8 w-24 sm:w-28 lg:w-32" />
+                            </div>
+                          ))}
+                        </div>
+                      ) : tickerData || stablePrice ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6">
+                          <SmoothPriceCard
+                            title="Current Price"
+                            value={stablePrice?.price || tickerData?.last || "0"}
+                            prefix={currentExchange === "bybit" ? "$" : "Rp "}
+                            icon={DollarSign}
+                            trend="neutral"
+                            className="col-span-1 sm:col-span-2"
+                            symbol={selectedPair?.id || ""}
+                          />
+                          
+                          <SmoothPriceCard
+                            title="24h High"
+                            value={stablePrice?.high24h || tickerData?.high || "0"}
+                            prefix={currentExchange === "bybit" ? "$" : "Rp "}
+                            icon={TrendingUp}
+                            trend="up"
+                            symbol={selectedPair?.id || ""}
+                          />
+                          
+                          <SmoothPriceCard
+                            title="24h Low"
+                            value={stablePrice?.low24h || tickerData?.low || "0"}
+                            prefix={currentExchange === "bybit" ? "$" : "Rp "}
+                            icon={TrendingDown}
+                            trend="down"
+                            symbol={selectedPair?.id || ""}
+                          />
+                          
+                          <SmoothPriceCard
+                            title="24h Volume"
+                            value={stablePrice?.volume24h || tickerData?.vol_idr || "0"}
+                            prefix={currentExchange === "bybit" ? "$" : "Rp "}
+                            icon={BarChart3}
+                            trend="neutral"
+                            className="col-span-1 sm:col-span-2"
+                            symbol={selectedPair?.id || ""}
+                          />
+                          
+                          <SmoothPriceCard
+                            title="Bid Price"
+                            value={tickerData?.buy || "0"}
+                            prefix={currentExchange === "bybit" ? "$" : "Rp "}
+                            trend="up"
+                            symbol={selectedPair?.id || ""}
+                          />
+                          
+                          <SmoothPriceCard
+                            title="Ask Price"
+                            value={tickerData?.sell || "0"}
+                            prefix={currentExchange === "bybit" ? "$" : "Rp "}
+                            trend="down"
+                            symbol={selectedPair?.id || ""}
+                          />
+                        </div>
+                      ) : (
+                        <div className="text-center py-12">
+                          <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-muted/20 flex items-center justify-center">
+                            <Activity className="w-8 h-8 text-muted-foreground/50" />
+                          </div>
+                          <p className="text-muted-foreground">No ticker data available</p>
+                        </div>
+                      )}
+                    </CardContent>
+                  </SmoothCard>
+
+                  {/* Enhanced Tabs Section */}
+                  <Tabs defaultValue="trades" className="w-full">
+                    <TabsList className="grid w-full grid-cols-2 bg-muted/30 p-1 rounded-xl h-12">
+                      <TabsTrigger value="trades" className="rounded-lg text-sm font-medium">
+                        Recent Trades
+                      </TabsTrigger>
+                      <TabsTrigger value="orderbook" className="rounded-lg text-sm font-medium">
+                        Order Book
+                      </TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="trades" className="mt-6">
+                      <SmoothCard className="glass border-0 shadow-xl" delay={400}>
+                        <CardHeader>
+                          <CardTitle className="flex items-center gap-3">
+                            <Activity className="w-5 h-5 text-primary" />
+                            Recent Trades
+                            <LiveConnectionIndicator 
+                              status={effectiveConnectionStatus}
+                              lastUpdate={Date.now()}
+                            />
+                          </CardTitle>
+                        </CardHeader>
+                        
+                        <CardContent>
+                          <div className="space-y-3 max-h-96 overflow-y-auto custom-scrollbar">
+                            {tradesLoading ? (
+                              <SmoothSkeleton lines={10} />
+                            ) : trades && trades.length > 0 ? (
+                              trades.map((trade: TradeData, index: number) => (
+                                <SmoothListItem
+                                  key={trade.tid || index}
+                                  delay={index * 50}
+                                  className="flex justify-between items-center p-4 rounded-xl bg-muted/10 hover:bg-muted/20 border border-border/20"
+                                >
+                                  <div className="flex items-center gap-4">
+                                    <div className={`p-2 rounded-full ${
+                                      trade.type === "buy" 
+                                        ? "bg-emerald-500/20 text-emerald-400" 
+                                        : "bg-red-500/20 text-red-400"
+                                    }`}>
+                                      {trade.type === "buy" ? (
+                                        <TrendingUp className="w-4 h-4" />
+                                      ) : (
+                                        <TrendingDown className="w-4 h-4" />
+                                      )}
+                                    </div>
+                                    <div>
+                                      <div className="font-semibold">
+                                        <AnimatedNumber 
+                                          value={parseFloat(trade.price) * parseFloat(trade.amount)} 
+                                          prefix={currentExchange === "bybit" ? "$" : "Rp "} 
+                                          decimals={2}
+                                          symbol={selectedPair?.id || ""}
+                                        />
+                                      </div>
+                                      <div className="text-sm text-muted-foreground">
+                                        {parseFloat(trade.amount).toFixed(8)} {selectedPair.traded_currency_unit} @ {currentExchange === "bybit" ? "$" : "Rp "}{parseFloat(trade.price).toLocaleString()}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="text-right">
+                                    <div className="text-xs text-muted-foreground">
+                                      {new Date(parseInt(trade.date) * 1000).toLocaleTimeString()}
+                                    </div>
+                                  </div>
+                                </SmoothListItem>
+                              ))
+                            ) : (
+                              <div className="text-center py-12">
+                                <Activity className="w-12 h-12 mx-auto mb-4 text-muted-foreground/50" />
+                                <p className="text-muted-foreground">No trades available</p>
+                              </div>
+                            )}
+                          </div>
+                        </CardContent>
+                      </SmoothCard>
+                    </TabsContent>
+
+                    <TabsContent value="orderbook" className="mt-6">
+                      <SmoothCard className="glass border-0 shadow-xl" delay={500}>
+                        <CardHeader>
+                          <CardTitle className="flex items-center gap-3">
+                            <BarChart3 className="w-5 h-5 text-primary" />
+                            Order Book
+                            <LiveConnectionIndicator 
+                              status={effectiveConnectionStatus}
+                              lastUpdate={depth?.lastUpdate}
+                            />
+                          </CardTitle>
+                        </CardHeader>
+                        
+                        <CardContent>
+                          {depthLoading ? (
+                            <SmoothSkeleton lines={15} />
+                          ) : depth ? (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                              {/* Buy Orders */}
+                              <div className="space-y-4">
+                                <h4 className="font-semibold text-emerald-400 flex items-center gap-2 text-lg">
+                                  <TrendingUp className="w-5 h-5" />
+                                  Buy Orders
+                                </h4>
+                                <div className="space-y-2 max-h-72 overflow-y-auto custom-scrollbar">
+                                  {depth.buy.slice(0, 15).map(([price, amount]: [string, string], index: number) => (
+                                    <SmoothListItem
+                                      key={index}
+                                      delay={index * 20}
+                                      className="flex justify-between text-sm p-3 rounded-lg bg-emerald-500/5 hover:bg-emerald-500/10 border border-emerald-500/10"
+                                    >
+                                      <span className="text-emerald-400 font-medium font-mono">
+                                        <AnimatedNumber value={price} prefix={currentExchange === "bybit" ? "$" : "Rp "} symbol={selectedPair?.id || ""} />
+                                      </span>
+                                      <span className="text-muted-foreground font-mono">
+                                        {parseFloat(amount).toFixed(8)}
+                                      </span>
+                                    </SmoothListItem>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {/* Sell Orders */}
+                              <div className="space-y-4">
+                                <h4 className="font-semibold text-red-400 flex items-center gap-2 text-lg">
+                                  <TrendingDown className="w-5 h-5" />
+                                  Sell Orders
+                                </h4>
+                                <div className="space-y-2 max-h-72 overflow-y-auto custom-scrollbar">
+                                  {depth.sell.slice(0, 15).map(([price, amount]: [string, string], index: number) => (
+                                    <SmoothListItem
+                                      key={index}
+                                      delay={index * 20}
+                                      className="flex justify-between text-sm p-3 rounded-lg bg-red-500/5 hover:bg-red-500/10 border border-red-500/10"
+                                    >
+                                      <span className="text-red-400 font-medium font-mono">
+                                        <AnimatedNumber value={price} prefix={currentExchange === "bybit" ? "$" : "Rp "} symbol={selectedPair?.id || ""} />
+                                      </span>
+                                      <span className="text-muted-foreground font-mono">
+                                        {parseFloat(amount).toFixed(8)}
+                                      </span>
+                                    </SmoothListItem>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-center py-12">
+                              <BarChart3 className="w-12 h-12 mx-auto mb-4 text-muted-foreground/50" />
+                              <p className="text-muted-foreground">No order book data available</p>
+                            </div>
+                          )}
+                        </CardContent>
+                      </SmoothCard>
+                    </TabsContent>
+                  </Tabs>
+                </div>
+              ) : (
+                <SmoothCard className="glass-card border-0 shadow-xl" delay={300}>
+                  <CardContent className="flex items-center justify-center min-h-[600px]">
+                    <div className="text-center space-y-6 max-w-md">
+                      <div className="w-32 h-32 mx-auto rounded-full bg-gradient-to-br from-primary/20 via-primary/10 to-primary/5 flex items-center justify-center float">
+                        <BarChart3 className="w-16 h-16 text-primary" />
+                      </div>
+                      <div className="space-y-3">
+                        <h3 className="text-3xl font-bold gradient-text">Choose a Market</h3>
+                        <p className="text-muted-foreground text-lg leading-relaxed">
+                          Select a cryptocurrency from the sidebar to view real-time trading data, 
+                          recent trades, and order book information.
+                        </p>
+                      </div>
+                      <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                        <Zap className="w-4 h-4" />
+                        <span>Live data • Real-time updates • Professional grade</span>
+                      </div>
+                    </div>
+                  </CardContent>
+                </SmoothCard>
+              )}
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </SmoothPageTransition>
   )
 }
