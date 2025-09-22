@@ -145,11 +145,13 @@ export const useTicker = (pair: CoinPair | null, exchange: Exchange): UseApiRetu
 }
 
 // Custom hook for trades data
-export const useTrades = (pair: CoinPair | null, exchange: Exchange): UseApiReturn<TradeData[]> => {
+export const useTrades = (pair: CoinPair | null, exchange: Exchange): UseApiReturn<TradeData[]> & { newTradesIds: string[] } => {
   const [data, setData] = useState<TradeData[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [lastUpdate, setLastUpdate] = useState(0)
+  const [newTradesIds, setNewTradesIds] = useState<string[]>([])
+  const previousTradesRef = useRef<{ [key: string]: boolean }>({})
 
   const fetchTrades = useCallback(async () => {
     if (!pair) return
@@ -161,7 +163,28 @@ export const useTrades = (pair: CoinPair | null, exchange: Exchange): UseApiRetu
       if (exchange === 'indodax') {
         const response = await indodaxApiService.getTrades(pair.id)
         if (response.success && response.data) {
-          setData(Array.isArray(response.data) ? response.data.slice(0, 20) : [])
+          const newTrades = Array.isArray(response.data) ? response.data.slice(0, 20) : []
+          
+          // Identify new trades
+          const currentTradeIds: { [key: string]: boolean } = {}
+          const newTradeIds: string[] = []
+          
+          newTrades.forEach(trade => {
+            const tradeId = trade.tid || `${trade.date}-${trade.price}-${trade.amount}`
+            currentTradeIds[tradeId] = true
+            
+            // If this trade wasn't in our previous set, mark it as new
+            if (!previousTradesRef.current[tradeId]) {
+              newTradeIds.push(tradeId)
+            }
+          })
+          
+          // Update previous trades ref for next comparison
+          previousTradesRef.current = currentTradeIds
+          
+          // Update state
+          setData(newTrades)
+          setNewTradesIds(newTradeIds)
           setLastUpdate(Date.now())
         } else {
           throw new Error(response.error || 'Failed to fetch trades')
@@ -170,7 +193,27 @@ export const useTrades = (pair: CoinPair | null, exchange: Exchange): UseApiRetu
         const response = await bybitApiService.getRecentTrades(pair.symbol.toUpperCase())
         if (response.success && response.data?.result?.list) {
           const transformedTrades = transformBybitTrades(response.data.result.list)
+          
+          // Identify new trades
+          const currentTradeIds: { [key: string]: boolean } = {}
+          const newTradeIds: string[] = []
+          
+          transformedTrades.forEach(trade => {
+            const tradeId = trade.tid || `${trade.date}-${trade.price}-${trade.amount}`
+            currentTradeIds[tradeId] = true
+            
+            // If this trade wasn't in our previous set, mark it as new
+            if (!previousTradesRef.current[tradeId]) {
+              newTradeIds.push(tradeId)
+            }
+          })
+          
+          // Update previous trades ref for next comparison
+          previousTradesRef.current = currentTradeIds
+          
+          // Update state
           setData(transformedTrades)
+          setNewTradesIds(newTradeIds)
           setLastUpdate(Date.now())
         } else {
           throw new Error(response.error || 'Failed to fetch Bybit trades')
@@ -191,19 +234,29 @@ export const useTrades = (pair: CoinPair | null, exchange: Exchange): UseApiRetu
 
   useEffect(() => {
     if (pair) {
+      // Fetch trades initially
       fetchTrades()
+      
+      // Set up automatic refresh interval (every 5 seconds)
+      const refreshInterval = setInterval(() => {
+        if (pair) fetchTrades()
+      }, 5000)
+      
+      // Clean up interval on unmount or when pair changes
+      return () => clearInterval(refreshInterval)
     } else {
       setData([])
       setError(null)
     }
-  }, [fetchTrades])
+  }, [pair, exchange, fetchTrades])
 
   return {
     data,
     loading,
     error,
     lastUpdate,
-    refetch: fetchTrades
+    refetch: fetchTrades,
+    newTradesIds
   }
 }
 

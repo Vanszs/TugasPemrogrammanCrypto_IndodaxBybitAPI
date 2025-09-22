@@ -233,7 +233,7 @@ export default function ModernCryptoViewer() {
   // Use custom hooks for data fetching
   const { pairs, loading: pairsLoading, error: pairsError, refetch: refetchPairs } = useCryptoPairs(currentExchange)
   const { data: tickerData, loading: tickerLoading } = useTicker(selectedPair, currentExchange)
-  const { data: trades, loading: tradesLoading } = useTrades(selectedPair, currentExchange)
+  const { data: trades, loading: tradesLoading, newTradesIds } = useTrades(selectedPair, currentExchange)
   const { data: depth, loading: depthLoading } = useDepth(selectedPair, currentExchange)
   
   // WebSocket integration for real-time updates with fallback
@@ -704,48 +704,67 @@ export default function ModernCryptoViewer() {
                         <CardContent>
                           <div className="space-y-3 max-h-96 overflow-y-auto custom-scrollbar">
                             {tradesLoading ? (
-                              <SmoothSkeleton lines={10} />
+                              <div className="space-y-4">
+                                <SmoothSkeleton lines={10} />
+                                <div className="flex items-center justify-center py-2">
+                                  <Badge variant="outline" className="bg-muted/20 animate-pulse">
+                                    Loading trades...
+                                  </Badge>
+                                </div>
+                              </div>
                             ) : trades && trades.length > 0 ? (
-                              trades.map((trade: TradeData, index: number) => (
-                                <SmoothListItem
-                                  key={trade.tid || index}
-                                  delay={index * 50}
-                                  className="flex justify-between items-center p-4 rounded-xl bg-muted/10 hover:bg-muted/20 border border-border/20"
-                                >
-                                  <div className="flex items-center gap-4">
-                                    <div className={`p-2 rounded-full ${
-                                      trade.type === "buy" 
-                                        ? "bg-emerald-500/20 text-emerald-400" 
-                                        : "bg-red-500/20 text-red-400"
-                                    }`}>
-                                      {trade.type === "buy" ? (
-                                        <TrendingUp className="w-4 h-4" />
-                                      ) : (
-                                        <TrendingDown className="w-4 h-4" />
-                                      )}
-                                    </div>
-                                    <div>
-                                      <div className="font-semibold">
-                                        <AnimatedNumber 
-                                          value={parseFloat(trade.price) * parseFloat(trade.amount)} 
-                                          prefix={currentExchange === "bybit" ? "$" : "Rp "} 
-                                          decimals={2}
-                                          symbol={selectedPair?.id || ""}
-                                        />
+                              <>
+                                {trades.map((trade: TradeData, index: number) => (
+                                  <SmoothListItem
+                                    key={`${trade.tid || index}-${trade.date}`}
+                                    delay={0}
+                                    className={`flex justify-between items-center p-4 rounded-xl 
+                                      ${newTradesIds.includes(trade.tid || `${trade.date}-${trade.price}-${trade.amount}`) 
+                                        ? 'bg-primary/10 border-primary/30 animate-pulse'
+                                        : 'bg-muted/10 hover:bg-muted/20 border border-border/20'
+                                      }`}
+                                  >
+                                    <div className="flex items-center gap-4">
+                                      <div className={`p-2 rounded-full ${
+                                        trade.type === "buy" 
+                                          ? "bg-emerald-500/20 text-emerald-400" 
+                                          : "bg-red-500/20 text-red-400"
+                                      }`}>
+                                        {trade.type === "buy" ? (
+                                          <TrendingUp className="w-4 h-4" />
+                                        ) : (
+                                          <TrendingDown className="w-4 h-4" />
+                                        )}
                                       </div>
-                                      <div className="text-sm text-muted-foreground">
-                                        {parseFloat(trade.amount).toFixed(8)} {selectedPair.traded_currency_unit} @ {currentExchange === "bybit" ? "$" : "Rp "}{parseFloat(trade.price).toLocaleString()}
+                                      <div>
+                                        <div className="font-semibold">
+                                          <AnimatedNumber 
+                                            value={parseFloat(trade.price) * parseFloat(trade.amount)} 
+                                            prefix={currentExchange === "bybit" ? "$" : "Rp "} 
+                                            decimals={2}
+                                            symbol={selectedPair?.id || ""}
+                                          />
+                                        </div>
+                                        <div className="text-sm text-muted-foreground">
+                                          {parseFloat(trade.amount).toFixed(8)} {selectedPair.traded_currency_unit} @ {currentExchange === "bybit" ? "$" : "Rp "}{parseFloat(trade.price).toLocaleString()}
+                                        </div>
                                       </div>
                                     </div>
-                                  </div>
-                                  
-                                  <div className="text-right">
-                                    <div className="text-xs text-muted-foreground">
-                                      {new Date(parseInt(trade.date) * 1000).toLocaleTimeString()}
+                                    
+                                    <div className="text-right">
+                                      <div className="text-xs text-muted-foreground">
+                                        {new Date(parseInt(trade.date) * 1000).toLocaleTimeString()}
+                                      </div>
                                     </div>
-                                  </div>
-                                </SmoothListItem>
-                              ))
+                                  </SmoothListItem>
+                                ))}
+                                <div className="flex justify-center mt-4">
+                                  <Badge variant="outline" className="bg-primary/5 text-muted-foreground flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
+                                    Auto-updates every 5s
+                                  </Badge>
+                                </div>
+                              </>
                             ) : (
                               <div className="text-center py-12">
                                 <Activity className="w-12 h-12 mx-auto mb-4 text-muted-foreground/50" />
